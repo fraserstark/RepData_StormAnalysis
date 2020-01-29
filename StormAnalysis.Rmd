@@ -1,0 +1,251 @@
+---
+title: "US Storm Data Analysis"
+author: "Fraser Stark"
+date: "29/01/2020"
+output: 
+  html_document: 
+   keep_md: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Health & Economic Impact of US Weather events  
+## Introduction
+
+Storms and other severe weather events can cause both public health and economic problems for communities and municipalities. Many severe events can result in fatalities, injuries, and property damage, and preventing such outcomes to the extent possible is a key concern.
+
+The following document describes an analysis of the US National Oceanic and Atmospheric Administration’s (NOAA) storm database and in particular will answer two questions: which types of weather events are most harmful to population health, and which types of weather events have the most costly economic impact. 
+
+This database tracks characteristics of major storms and weather events in the United States, including when and where they occur, as well as estimates of any fatalities, injuries, and property damage. The database itself has various inaccuracies and data issues but this analysis will describe the steps taken to try and clean the dataset. 
+
+## Data 
+
+The data for this assignment come in the form of a comma-separated-value file compressed via the bzip2 algorithm to reduce its size. You can download the file from the course web site:
+
+[Storm Data](https://d396qusza40orc.cloudfront.net/repdata%2Fdata%2FStormData.csv.bz2) [47Mb]
+
+There is also some documentation of the database available. Here you will find how some of the variables are constructed/defined.
+
+* National Weather Service Storm Data [Documentation](https://d396qusza40orc.cloudfront.net/repdata%2Fpeer2_doc%2Fpd01016005curr.pdf)
+* National Climatic Data Center Storm Events [FAQ](https://d396qusza40orc.cloudfront.net/repdata%2Fpeer2_doc%2FNCDC%20Storm%20Events-FAQ%20Page.pdf)
+
+The events in the database start in the year 1950 and end in November 2011. In the earlier years of the database there are generally fewer events recorded, most likely due to a lack of good records. More recent years should be considered more complete.
+
+
+## Data Processing
+
+We'll make use of the dplyr package, which provides a set of tools for quick and powerful manipulation of tabular datasets. 
+
+```{r, message=FALSE}
+library(dplyr)
+```
+
+First, we can read the data (which as mentioned previously is stored in compressed format), by using `read.csv()` as normal
+
+```{r}
+dat <- read.csv("repdata_data_StormData.csv.bz2")
+
+dim(dat)
+```
+
+
+We can see that the dataset contains 902297 observations of 37 variables. We won't be using all of these variables, so we'll disregard some later. 
+
+
+Next, let's explore what types of event are categorised in EVTYPE variable.
+
+```{r}
+length(unique(dat[,'EVTYPE']))
+
+head(unique(dat[,'EVTYPE']),15)
+```
+
+So in total there are 985 unique events, but as we can see from the output of the first 15, some are duplicated and it appears similar events are recorded in different ways.
+
+Take hurricanes, for example:
+
+```{r}
+unique(dat[grep('HURRICANE', dat$EVTYPE),'EVTYPE'])
+```
+
+
+Notice that hurricane events appear to be recorded as specific instances of storms, like Gordon, Emily, Opal. Ideally we need to consolidate these into a single 'type' of weather event for further analysis.
+
+```{r}
+dat[grep('HURRICANE', dat$EVTYPE),'EVTYPE'] <- "HURRICANE"
+
+# Confirm we now have a single event type for hurricanes
+unique(dat[grep('HURRICANE', dat$EVTYPE),'EVTYPE'])
+```
+
+Next, if we look at the values for economic damage, the multiplier is stored in a distinct variable as a character representing the order of magnitude: H = 100, K = 1000 etc. 
+
+
+```{r}
+head(dat[, c('PROPDMG','PROPDMGEXP')])
+```
+
+
+We need to use this later to create a single variable representing the total cost for each observation.
+
+```{r, warning=FALSE}
+# Convert property damage values 
+dat$PROPDMGEXP <- gsub("[Hh]", "100", dat$PROPDMGEXP)
+dat$PROPDMGEXP <- gsub("[Kk]", "1000", dat$PROPDMGEXP)
+dat$PROPDMGEXP <- gsub("[Mm]", "1000000", dat$PROPDMGEXP)
+dat$PROPDMGEXP <- gsub("[Bb]", "1000000000", dat$PROPDMGEXP)
+dat$PROPDMGEXP[dat$PROPDMGEXP == ""] <- "1"
+
+# Convert to numeric
+dat$PROPDMGEXP <- as.numeric(dat$PROPDMGEXP)
+
+# Convert crop damage values
+dat$CROPDMGEXP <- gsub("[Hh]","100", dat$CROPDMGEXP)
+dat$CROPDMGEXP <- gsub("[Kk]","1000", dat$CROPDMGEXP)
+dat$CROPDMGEXP <- gsub("[Mm]","1000000", dat$CROPDMGEXP)
+dat$CROPDMGEXP <- gsub("[Bb]","1000000000", dat$CROPDMGEXP)
+dat$CROPDMGEXP[dat$CROPDMGEXP == ""] <- "1"
+
+# Convert to numeric
+dat$CROPDMGEXP <- as.numeric(dat$CROPDMGEXP)
+```
+
+
+Lastly, we select only the variables that we're interested in for the next stage of the analysis...
+
+```{r}
+dat <- dat %>% select(EVTYPE, FATALITIES, INJURIES, PROPDMG, PROPDMGEXP, CROPDMG, CROPDMGEXP)
+
+
+head(dat)
+```
+
+# Results 
+
+## Health Impact 
+
+Let's create a new dataset for analysing the health impact associated with major storm incidents. We can use the dplyr grammar to group by the category of event and summarise the total fatalities and injuries for each EVTYPE.
+
+```{r}
+health_dat <- dat %>% group_by(EVTYPE) %>% summarise(FATALITIES = sum(FATALITIES), INJURIES = sum(INJURIES))
+
+health_dat <- health_dat %>% 
+    group_by(EVTYPE) %>%
+    summarise(FATALITIES = sum(FATALITIES), INJURIES = sum(INJURIES)) %>% 
+    mutate(total = FATALITIES + INJURIES)  %>% 
+    arrange(desc(total))
+```
+
+
+Let's take a look at the top five most harmful events (those with most casualties). 
+
+```{r}
+health_dat[1:5, ]
+```
+
+
+Call on a few more packages to help plot the results...
+
+```{r, message=FALSE}
+library(ggplot2)
+library(gridExtra)
+library(RColorBrewer)
+```
+
+
+The plot below presents the health impact results from a different perspective. 
+
+```{r, warning=FALSE}
+t5_health_dat <- health_dat[1:5,]
+
+# Plot fatalities 
+p1 <- ggplot(data = t5_health_dat,aes(reorder(EVTYPE, FATALITIES), FATALITIES, fill = as.factor(FATALITIES))) + 
+  geom_bar(stat = "identity") + 
+  coord_flip() +
+  labs(x = "Weather Event",
+       y = "Number of Fatalities",
+       title = "Fatalities due to weather events") + 
+  theme(legend.position = "none") +
+  scale_fill_brewer(palette = "Reds")
+
+# Plot injuries 
+p2 <- ggplot(data = t5_health_dat,aes(reorder(EVTYPE, INJURIES), INJURIES, fill = as.factor(INJURIES))) + 
+  geom_bar(stat = "identity") + 
+  coord_flip() +
+  labs(x = "Weather Event",
+       y = "Number of Injuries",
+       title = "Injuries due to weather events") + 
+  theme(legend.position = "none") +
+  scale_fill_brewer(palette = "BuPu")
+
+
+grid.arrange(p1, p2, nrow=2)
+```
+
+### Summary
+
+So here we have identified that Tornadoes are by some margin, the most harmful weather event, causing more fatalaties and considerably more injuries than others. 
+
+
+## Economic Impact
+
+Let's create another dataset for considering the economic consequences of storm events, by calculating the total costs and converting to Billions
+
+```{r}
+economic_dat <- dat %>%
+    mutate(PROPDMG = PROPDMG * PROPDMGEXP / 1e9, CROPDMG = CROPDMG * CROPDMGEXP / 1e9) %>%
+    group_by(EVTYPE) %>%
+    summarise(t_PROPDMG = sum(PROPDMG), t_CROPDMG = sum(CROPDMG))
+```
+
+Then let's order the results and look at the top five events impacting property damage:
+
+```{r}
+# Order by Property damage
+prop_dmg <- economic_dat %>% arrange(desc(t_PROPDMG))
+head(prop_dmg)
+```
+
+and again for Crop damage
+
+```{r}
+# Order by Crop damage
+crop_dmg <- economic_dat %>% arrange(desc(t_CROPDMG))
+head(crop_dmg)
+```
+
+And plot the top ten events impacting each...
+
+```{r}
+prop_dmg <- prop_dmg[1:10,]
+crop_dmg <- crop_dmg[1:10,]
+  
+# Plot property damage
+p3 <- ggplot(data = prop_dmg,aes(reorder(EVTYPE, t_PROPDMG), t_PROPDMG, fill = t_PROPDMG)) + 
+    geom_bar(stat = "identity") + 
+    labs(x = "Weather Event",
+         y = "Total Cost in $Billions",
+         title = "Most costly events impacting damage to property") + 
+    coord_flip() +
+    theme(legend.position = "none")
+
+
+# Plot crop damage
+p4 <- ggplot(data = crop_dmg,aes(reorder(EVTYPE, t_CROPDMG), t_CROPDMG, fill = t_CROPDMG)) + 
+  geom_bar(stat = "identity") + 
+  labs(x = "Weather Event",
+       y = "Total Cost in $Billions",
+       title = "Most costly events impacting crops and agriculture") + 
+  coord_flip() +
+  theme(legend.position = "none")
+
+
+grid.arrange(p3, p4, nrow=2)
+
+```
+
+### Summary 
+
+So it appears from this data, that floods and hurricanes top the list for most costly events in terms of property destruction, while droughts are the most economically devastating to crop harvests. 
